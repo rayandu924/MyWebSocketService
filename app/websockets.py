@@ -120,17 +120,50 @@ async def handle_send_room(connection_id, data, ws):
     # Envoi à chaque membre présent dans la salle
     for member_id in members:
         logger.info(f"[SERVER] Envoi du message à {member_id}")
-        logger.info(f"[SERVER] Connexions Actives: {connections}")
-        logger.info(f"[SERVER] Room Actives: {rooms}")
+        logger.debug(f"[SERVER] Connexions Actives: {connections}")
+        logger.debug(f"[SERVER] Rooms Actives: {rooms}")
         member_ws = connections.get(member_id)
-        logger.info(f"[SERVER] Member WS: {member_ws}")
-        try:
-            await member_ws.send_json(broadcast_message)
-            logger.info(f"[SERVER] Message envoyé à {member_id}")
-        except Exception as e:
-            logger.error(f"[SERVER] Erreur lors de l'envoi du message à {member_id}: {e}")
+        logger.debug(f"[SERVER] Member WS: {member_ws}")
+        if member_ws:
+            try:
+                await member_ws.send_json(broadcast_message)
+                logger.info(f"[SERVER] Message envoyé à {member_id}")
+            except Exception as e:
+                logger.error(f"[SERVER] Erreur lors de l'envoi du message à {member_id}: {e}")
 
     logger.info(f"[SERVER] Message diffusé dans la salle {room_name} par {connection_id}")
+
+# Nouveau handler pour envoyer des messages privés
+async def handle_send_user(connection_id, data, ws):
+    target_id = data.get("target_id")
+    message = data.get("message")
+
+    # Vérifications de base
+    if not target_id or not message:
+        await ws.send_json({"type": "error", "message": "target_id et message requis"})
+        return
+
+    # Vérifier que l'utilisateur cible est connecté
+    target_ws = connections.get(target_id)
+    if not target_ws:
+        await ws.send_json({"type": "error", "message": "Utilisateur cible non connecté"})
+        return
+
+    # Préparer le message à envoyer
+    user_message = {
+        "type": "private_message",
+        "source": connection_id,
+        "message": message
+    }
+
+    # Envoyer le message à l'utilisateur cible
+    try:
+        await target_ws.send_json(user_message)
+        await ws.send_json({"type": "info", "message": f"Message envoyé à {target_id}"})
+        logger.info(f"[SERVER] Message privé de {connection_id} à {target_id}: {message}")
+    except Exception as e:
+        logger.error(f"[SERVER] Erreur lors de l'envoi du message privé à {target_id}: {e}")
+        await ws.send_json({"type": "error", "message": "Erreur lors de l'envoi du message"})
 
 # ========================================
 # WebSocket Handler principal
@@ -172,6 +205,8 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
                         await handle_leave_room(connection_id, data, ws)
                     elif msg_type == "send_room":
                         await handle_send_room(connection_id, data, ws)
+                    elif msg_type == "send_user":
+                        await handle_send_user(connection_id, data, ws)
                     else:
                         await ws.send_json({"type": "error", "message": "Type de message inconnu"})
                         logger.warning(f"[SERVER] Type de message inconnu de {connection_id} : {msg_type}")
