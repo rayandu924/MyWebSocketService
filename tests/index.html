@@ -1,199 +1,279 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
-    <meta charset="UTF-8">
-    <title>Client WebSocket avec Gestion de Salles</title>
-    <style>
-        body { font-family: Arial, sans-serif; margin: 20px; }
-        #messages { border: 1px solid #ccc; padding: 10px; height: 200px; overflow-y: scroll; }
-        #roomsList { margin-top: 10px; }
-        #currentRoom { margin-top: 10px; }
-    </style>
+  <meta charset="UTF-8" />
+  <title>Exemple WebRTC minimal (WebSocket unifié)</title>
+  <style>
+    #videoContainer {
+      display: flex;
+      flex-wrap: wrap;
+    }
+    video {
+      width: 300px;
+      height: 225px;
+      margin: 5px;
+      background-color: black;
+    }
+    #controls {
+      margin-bottom: 10px;
+    }
+  </style>
 </head>
 <body>
-    <h1>Client WebSocket avec Gestion de Salles</h1>
+  <h1>Exemple WebRTC + send_user / send_room</h1>
+  <div id="controls">
+    <label>Room ID: <input id="roomInput" value="maRoomTest"></label>
+    <button id="joinBtn">Rejoindre</button>
+    <button id="leaveBtn" disabled>Quitter la salle</button>
+  </div>
+  
+  <div id="videoContainer"></div>
 
-    <div>
-        <p>Your Connection ID: <span id="yourId">Connecting...</span></p>
-    </div>
+  <script>
+    const WS_URL = 'ws://localhost:8080/ws';
+    let ws;
+    let connectionId = null;
+    let localStream = null;
+    const peerConnections = {};
 
-    <div>
-        <h2>Créer une Salle</h2>
-        <input type="text" id="createRoomInput" placeholder="Nom de la salle">
-        <button id="createRoomButton">Créer</button>
-    </div>
+    const joinBtn = document.getElementById('joinBtn');
+    const leaveBtn = document.getElementById('leaveBtn');
+    const roomInput = document.getElementById('roomInput');
 
-    <div>
-        <h2>Rejoindre une Salle</h2>
-        <select id="roomsSelect">
-            <option value="">-- Sélectionner une salle --</option>
-        </select>
-        <button id="joinRoomButton">Rejoindre</button>
-    </div>
+    joinBtn.addEventListener('click', async () => {
+      const roomId = roomInput.value.trim();
+      if (!roomId) return;
+      
+      // Récupérer audio/vidéo local
+      try {
+        localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        addVideoStream(localStream, "localVideo", true);
+      } catch (err) {
+        console.warn("Erreur getUserMedia:", err);
+      }
+      // Envoyer un message "join_room"
+      wsSend({ type: 'join_room', room: roomId });
 
-    <div id="currentRoom" style="display: none;">
-        <h2>Salle Actuelle: <span id="currentRoomName"></span></h2>
-        <button id="leaveRoomButton">Quitter la Salle</button>
-    </div>
+      // Activer le bouton "Quitter"
+      joinBtn.disabled = true;
+      leaveBtn.disabled = false;
+    });
 
-    <div id="chat" style="display: none;">
-        <h3>Chat dans la Salle</h3>
-        <div id="messages"></div>
-        <input type="text" id="messageInput" placeholder="Votre message">
-        <button id="sendMessageButton">Envoyer</button>
-    </div>
+    leaveBtn.addEventListener('click', () => {
+      const roomId = roomInput.value.trim();
+      if (!roomId) return;
+      wsSend({ type: 'leave_room', room: roomId });
 
-    <script>
-        const yourIdSpan = document.getElementById('yourId');
-        const createRoomInput = document.getElementById('createRoomInput');
-        const createRoomButton = document.getElementById('createRoomButton');
-        const roomsSelect = document.getElementById('roomsSelect');
-        const joinRoomButton = document.getElementById('joinRoomButton');
-        const currentRoomDiv = document.getElementById('currentRoom');
-        const currentRoomNameSpan = document.getElementById('currentRoomName');
-        const leaveRoomButton = document.getElementById('leaveRoomButton');
-        const chatDiv = document.getElementById('chat');
-        const messagesDiv = document.getElementById('messages');
-        const messageInput = document.getElementById('messageInput');
-        const sendMessageButton = document.getElementById('sendMessageButton');
+      // Désactiver le bouton "Quitter"
+      leaveBtn.disabled = true;
+      joinBtn.disabled = false;
+    });
 
-        let yourId;
-        let currentRoom = null;
+    function addVideoStream(stream, elementId, isLocal) {
+      let videoEl = document.getElementById(elementId);
+      if (!videoEl) {
+        videoEl = document.createElement('video');
+        videoEl.id = elementId;
+        videoEl.autoplay = true;
+        videoEl.playsInline = true;
+        if (isLocal) videoEl.muted = true;
+        document.getElementById('videoContainer').appendChild(videoEl);
+      }
+      videoEl.srcObject = stream;
+    }
 
-        const signalingServerUrl = 'ws://localhost:8080/ws'; // Changez l'URL si nécessaire
-        const ws = new WebSocket(signalingServerUrl);
-
-        ws.onopen = () => {
-            console.log('Connecté au serveur WebSocket');
-        };
-
-        ws.onmessage = (message) => {
-            const data = JSON.parse(message.data);
-            console.log('Message reçu du serveur:', data);
-
-            switch (data.type) {
-                case 'connection_id':
-                    yourId = data.connection_id;
-                    yourIdSpan.textContent = yourId;
-                    console.log(`Votre ID de connexion: ${yourId}`);
-                    break;
-
-                case 'active_rooms':
-                    updateRoomsList(data.rooms);
-                    break;
-
-                case 'room_created':
-                    alert(`Salle créée: ${data.room}`);
-                    break;
-
-                case 'joined_room':
-                    currentRoom = data.room;
-                    currentRoomNameSpan.textContent = currentRoom;
-                    currentRoomDiv.style.display = 'block';
-                    chatDiv.style.display = 'block';
-                    messagesDiv.innerHTML = '';
-                    console.log(`Vous avez rejoint la salle: ${currentRoom}`);
-                    break;
-
-                case 'left_room':
-                    currentRoom = null;
-                    currentRoomDiv.style.display = 'none';
-                    chatDiv.style.display = 'none';
-                    console.log(`Vous avez quitté la salle: ${data.room}`);
-                    break;
-
-                case 'room_message':
-                    console.log(`Message reçu dans la salle ${data.room} de ${data.source}: ${data.message}`);
-                    displayMessage(data.source, data.message);
-                    break;
-
-                case 'error':
-                    alert(`Erreur: ${data.message}`);
-                    console.error(`Erreur du serveur: ${data.message}`);
-                    break;
-
-                default:
-                    console.log('Type de message non géré:', data.type);
-            }
-        };
-
-        ws.onerror = (error) => {
-            console.error('Erreur WebSocket:', error);
-        };
-
-        ws.onclose = (event) => {
-            console.log(`WebSocket fermé: Code=${event.code}, Raison=${event.reason}`);
-        };
-
-        // Créer une salle
-        createRoomButton.addEventListener('click', () => {
-            const roomName = createRoomInput.value.trim();
-            if (roomName) {
-                const message = { type: "create_room", room: roomName };
-                ws.send(JSON.stringify(message));
-                console.log('Message envoyé au serveur:', message); // Log du message envoyé
-                createRoomInput.value = '';
-            } else {
-                alert('Veuillez entrer un nom de salle.');
-            }
-        });
-
-        // Rejoindre une salle
-        joinRoomButton.addEventListener('click', () => {
-            const selectedRoom = roomsSelect.value;
-            if (selectedRoom) {
-                const message = { type: "join_room", room: selectedRoom };
-                ws.send(JSON.stringify(message));
-                console.log('Message envoyé au serveur:', message); // Log du message envoyé
-            } else {
-                alert('Veuillez sélectionner une salle.');
-            }
-        });
-
-        // Quitter la salle
-        leaveRoomButton.addEventListener('click', () => {
-            if (currentRoom) {
-                const message = { type: "leave_room", room: currentRoom };
-                ws.send(JSON.stringify(message));
-                console.log('Message envoyé au serveur:', message); // Log du message envoyé
-                currentRoom = null;
-                currentRoomDiv.style.display = 'none';
-                chatDiv.style.display = 'none';
-            }
-        });
-
-        // Envoyer un message dans la salle
-        sendMessageButton.addEventListener('click', () => {
-            const messageText = messageInput.value.trim();
-            if (messageText && currentRoom) {
-                const message = { type: "send_room", room: currentRoom, message: messageText };
-                ws.send(JSON.stringify(message));
-                console.log('Message envoyé au serveur:', message); // Log du message envoyé
-                // Suppression de l'affichage local du message
-                // displayMessage('Vous', messageText);
-                messageInput.value = '';
-            }
-        });
-
-        // Mettre à jour la liste des salles
-        function updateRoomsList(rooms) {
-            roomsSelect.innerHTML = '<option value="">-- Sélectionner une salle --</option>';
-            for (const [room, members] of Object.entries(rooms)) {
-                // Vous pouvez ajouter des informations supplémentaires, comme le nombre de membres
-                const option = document.createElement('option');
-                option.value = room;
-                option.textContent = `${room} (${members.length})`;
-                roomsSelect.appendChild(option);
-            }
+    // ---------------------------
+    // WebSocket
+    // ---------------------------
+    function initWebSocket() {
+      ws = new WebSocket(WS_URL);
+      ws.onopen = () => console.log("[CLIENT] WebSocket ouvert");
+      ws.onerror = (err) => console.error("[CLIENT] WebSocket erreur:", err);
+      ws.onclose = () => console.log("[CLIENT] WebSocket fermé");
+      ws.onmessage = (event) => {
+        let data;
+        try {
+          data = JSON.parse(event.data);
+        } catch (e) {
+          console.error("JSON invalide:", e);
+          return;
         }
+        handleServerMessage(data);
+      };
+    }
 
-        // Afficher un message dans le chat
-        function displayMessage(source, message) {
-            const messageElement = document.createElement('p');
-            messageElement.innerHTML = `<strong>${source}:</strong> ${message}`;
-            messagesDiv.appendChild(messageElement);
-            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    function wsSend(obj) {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(obj));
+      } else {
+        console.warn("WebSocket pas prêt, msg ignoré:", obj);
+      }
+    }
+
+    async function handleServerMessage(data) {
+      switch (data.type) {
+        case 'connection_id':
+          connectionId = data.connection_id;
+          console.log("Mon ID =", connectionId);
+          break;
+
+        case 'joined_room':
+          console.log("Rejoint la salle:", data.room);
+          break;
+
+        case 'left_room':
+          console.log("Quitte la salle:", data.room);
+          // Fermer toutes les peer connections
+          for (let userId in peerConnections) {
+            peerConnections[userId].close();
+            delete peerConnections[userId];
+            // Retirer la vidéo correspondante
+            const videoEl = document.getElementById(`remoteVideo-${userId}`);
+            if (videoEl) videoEl.remove();
+          }
+          break;
+
+        case 'room_info':
+          // ex: user_joined, user_left
+          if (data.event === 'user_joined') {
+            const newUserId = data.userId;
+            console.log("Nouveau user:", newUserId);
+            // Créer la PeerConnection et initier l'offer
+            createPeerConnection(newUserId, true);
+          } else if (data.event === 'user_left') {
+            console.log("User parti:", data.userId);
+            onUserDisconnected(data.userId);
+          }
+          break;
+
+        case 'user_message':
+          // Message direct d'un autre user
+          const fromUser = data.from;
+          const payload = data.payload || {};
+          switch (payload.webrtc_type) {
+            case 'offer':
+              await onOfferReceived(fromUser, payload.offer);
+              break;
+            case 'answer':
+              await onAnswerReceived(fromUser, payload.answer);
+              break;
+            case 'candidate':
+              await onIceCandidateReceived(fromUser, payload.candidate);
+              break;
+            default:
+              console.log("user_message inconnu:", payload);
+          }
+          break;
+
+        default:
+          console.log("Message inconnu:", data);
+      }
+    }
+
+    // ---------------------------
+    // WebRTC
+    // ---------------------------
+    const rtcConfig = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+
+    async function createPeerConnection(userId, initiator) {
+      if (peerConnections[userId]) return peerConnections[userId];
+
+      const pc = new RTCPeerConnection(rtcConfig);
+      peerConnections[userId] = pc;
+
+      pc.onicecandidate = (event) => {
+        if (event.candidate) {
+          wsSend({
+            type: 'send_user',
+            to: userId,
+            payload: {
+              webrtc_type: 'candidate',
+              candidate: event.candidate
+            }
+          });
         }
-    </script>
+      };
+
+      pc.ontrack = (event) => {
+        const remoteStream = event.streams[0];
+        console.log("Flux distant reçu:", remoteStream);
+        addVideoStream(remoteStream, `remoteVideo-${userId}`, false);
+      };
+
+      if (localStream) {
+        localStream.getTracks().forEach(track => {
+          pc.addTrack(track, localStream);
+        });
+      }
+
+      // Si on est initiateur, on crée l'offer
+      if (initiator) {
+        try {
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          wsSend({
+            type: 'send_user',
+            to: userId,
+            payload: {
+              webrtc_type: 'offer',
+              offer: pc.localDescription
+            }
+          });
+        } catch (err) {
+          console.error("Erreur createOffer:", err);
+        }
+      }
+
+      return pc;
+    }
+
+    async function onOfferReceived(fromUser, offer) {
+      const pc = await createPeerConnection(fromUser, false);
+      await pc.setRemoteDescription(new RTCSessionDescription(offer));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      wsSend({
+        type: 'send_user',
+        to: fromUser,
+        payload: {
+          webrtc_type: 'answer',
+          answer: pc.localDescription
+        }
+      });
+    }
+
+    async function onAnswerReceived(fromUser, answer) {
+      const pc = peerConnections[fromUser];
+      if (!pc) return;
+      await pc.setRemoteDescription(new RTCSessionDescription(answer));
+    }
+
+    async function onIceCandidateReceived(fromUser, candidate) {
+      const pc = peerConnections[fromUser];
+      if (!pc) return;
+      try {
+        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+      } catch (err) {
+        console.error("Erreur addIceCandidate:", err);
+      }
+    }
+
+    function onUserDisconnected(userId) {
+      console.log('[CLIENT] userDisconnected =>', userId);
+      const pc = peerConnections[userId];
+      if (pc) {
+        pc.close();
+        delete peerConnections[userId];
+      }
+      // Retirer la vidéo correspondante
+      const videoEl = document.getElementById(`remoteVideo-${userId}`);
+      if (videoEl) {
+        videoEl.remove();
+      }
+    }
+
+    // Lancement
+    initWebSocket();
+  </script>
 </body>
 </html>
