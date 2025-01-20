@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <title>Système de Messagerie WebSocket</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    #roomsList, #usersList { max-height: 200px; overflow-y: auto; border: 1px solid #ccc; padding: 10px; }
+    #messages { max-height: 300px; overflow-y: auto; border: 1px solid #ccc; padding: 10px; margin-top: 10px; }
+    .message { margin-bottom: 10px; }
+    .message .from { font-weight: bold; }
+    .section { margin-bottom: 20px; }
+    label { display: block; margin-bottom: 5px; }
+    input[type="text"] { width: 100%; padding: 8px; box-sizing: border-box; }
+    button { padding: 8px 12px; margin-top: 5px; }
+  </style>
+</head>
+<body>
+  <h1>Système de Messagerie WebSocket</h1>
+  
+  <!-- Gestion des Salles -->
+  <div class="section">
+    <h2>Gestion des Salles</h2>
+    <label>
+      Nom de la Salle:
+      <input id="roomInput" type="text" placeholder="Entrez le nom de la salle" value="maRoomTest">
+    </label>
+    <button id="joinBtn">Rejoindre la Salle</button>
+    <button id="leaveBtn" disabled>Quitter la Salle</button>
+  </div>
+  
+  <!-- Liste des Salles Actives -->
+  <div class="section">
+    <h2>Salles Actives</h2>
+    <div id="roomsList">
+      <ul id="activeRooms"></ul>
+    </div>
+  </div>
+  
+  <!-- Liste des Utilisateurs dans la Salle -->
+  <div class="section" id="usersSection" style="display: none;">
+    <h2>Membres de la Salle: <span id="currentRoomName"></span></h2>
+    <div id="usersList">
+      <ul id="activeUsers"></ul>
+    </div>
+  </div>
+  
+  <!-- Affichage des Messages -->
+  <div class="section">
+    <h2>Messages</h2>
+    <div id="messages"></div>
+    <label>
+      Destinataire:
+      <select id="messageTarget">
+        <option value="room">Salle</option>
+      </select>
+    </label>
+    <label>
+      Message:
+      <input id="messageInput" type="text" placeholder="Entrez votre message ici">
+    </label>
+    <button id="sendBtn">Envoyer</button>
+  </div>
+
+  <script>
+    const WS_URL = 'ws://localhost:8080/ws';
+    let ws;
+    let connectionId = null;
+    let currentRoom = null;
+
+    const joinBtn = document.getElementById('joinBtn');
+    const leaveBtn = document.getElementById('leaveBtn');
+    const roomInput = document.getElementById('roomInput');
+    const activeRoomsList = document.getElementById('activeRooms');
+    const activeUsersList = document.getElementById('activeUsers');
+    const usersSection = document.getElementById('usersSection');
+    const currentRoomName = document.getElementById('currentRoomName');
+    const messagesDiv = document.getElementById('messages');
+    const messageInput = document.getElementById('messageInput');
+    const sendBtn = document.getElementById('sendBtn');
+    const messageTarget = document.getElementById('messageTarget');
+
+    // Initialiser la connexion WebSocket
+    function initWebSocket() {
+      ws = new WebSocket(WS_URL);
+
+      ws.onopen = () => {
+        console.log("[CLIENT] WebSocket ouvert");
+      };
+
+      ws.onerror = (err) => {
+        console.error("[CLIENT] WebSocket erreur:", err);
+      };
+
+      ws.onclose = () => {
+        console.log("[CLIENT] WebSocket fermé");
+        // Optionnel: essayer de se reconnecter
+      };
+
+      ws.onmessage = (event) => {
+        let data;
+        try {
+          data = JSON.parse(event.data);
+        } catch (e) {
+          console.error("JSON invalide:", e);
+          return;
+        }
+        handleServerMessage(data);
+      };
+    }
+
+    // Envoyer un message via WebSocket
+    function wsSend(obj) {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(obj));
+      } else {
+        console.warn("WebSocket pas prêt, message ignoré:", obj);
+      }
+    }
+
+    // Gérer les messages reçus du serveur
+    function handleServerMessage(data) {
+      switch (data.type) {
+        case 'connection_id':
+          connectionId = data.connection_id;
+          console.log("Mon ID =", connectionId);
+          break;
+
+        case 'joined_room':
+          console.log("Rejoint la salle:", data.room);
+          currentRoom = data.room;
+          joinBtn.disabled = true;
+          leaveBtn.disabled = false;
+          roomInput.disabled = true;
+          currentRoomName.textContent = currentRoom;
+          usersSection.style.display = 'block';
+          // Ajouter la salle comme option pour les messages
+          updateMessageTargetOptions();
+          break;
+
+        case 'left_room':
+          console.log("A quitté la salle:", data.room);
+          currentRoom = null;
+          joinBtn.disabled = false;
+          leaveBtn.disabled = true;
+          roomInput.disabled = false;
+          currentRoomName.textContent = '';
+          usersSection.style.display = 'none';
+          activeUsersList.innerHTML = '';
+          // Supprimer la salle de la liste des messages
+          updateMessageTargetOptions();
+          break;
+
+        case 'active_rooms':
+          updateActiveRooms(data.rooms);
+          break;
+
+        case 'room_info':
+          handleRoomInfo(data);
+          break;
+
+        case 'room_message':
+        case 'user_message':
+          displayMessage(data);
+          break;
+
+        case 'error':
+          console.error("Erreur du serveur:", data.message);
+          alert(`Erreur du serveur: ${data.message}`);
+          break;
+
+        default:
+          console.log("Message inconnu du serveur:", data);
+      }
+    }
+
+    // Mettre à jour la liste des salles actives
+    function updateActiveRooms(rooms) {
+      activeRoomsList.innerHTML = '';
+      for (let room in rooms) {
+        const li = document.createElement('li');
+        li.textContent = `${room} (${rooms[room].length} utilisateurs)`;
+        activeRoomsList.appendChild(li);
+      }
+
+      // Si l'utilisateur est dans une salle, mettre à jour la liste des utilisateurs
+      if (currentRoom && rooms[currentRoom]) {
+        updateActiveUsers(rooms[currentRoom]);
+      }
+    }
+
+    // Gérer les informations de la salle (user_joined, user_left)
+    function handleRoomInfo(data) {
+      if (!currentRoom) return;
+
+      const userId = data.userId;
+      if (data.event === 'user_joined') {
+        addUserToList(userId);
+        displaySystemMessage(`Utilisateur ${userId} a rejoint la salle.`);
+      } else if (data.event === 'user_left') {
+        removeUserFromList(userId);
+        displaySystemMessage(`Utilisateur ${userId} a quitté la salle.`);
+      }
+    }
+
+    // Afficher un message dans l'interface
+    function displayMessage(data) {
+      const messageEl = document.createElement('div');
+      messageEl.classList.add('message');
+
+      if (data.type === 'room_message') {
+        messageEl.innerHTML = `<span class="from">[Salle] ${data.from}:</span> ${data.payload.message}`;
+      } else if (data.type === 'user_message') {
+        messageEl.innerHTML = `<span class="from">[Direct] ${data.from}:</span> ${data.payload.message}`;
+      }
+
+      messagesDiv.appendChild(messageEl);
+      messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    }
+
+    // Afficher un message système
+    function displaySystemMessage(message) {
+      const messageEl = document.createElement('div');
+      messageEl.classList.add('message');
+      messageEl.style.fontStyle = 'italic';
+      messageEl.textContent = message;
+      messagesDiv.appendChild(messageEl);
+      messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    }
+
+    // Mettre à jour la liste des utilisateurs dans la salle actuelle
+    function updateActiveUsers(users) {
+      activeUsersList.innerHTML = '';
+      messageTarget.innerHTML = '<option value="room">Salle</option>';
+      
+      users.forEach(userId => {
+        if (userId !== connectionId) { // Ne pas inclure soi-même
+          addUserToList(userId);
+        }
+      });
+    }
+
+    // Ajouter un utilisateur à la liste des membres de la salle
+    function addUserToList(userId) {
+      const existingUser = document.getElementById(`user-${userId}`);
+      if (existingUser) return; // Éviter les doublons
+
+      const li = document.createElement('li');
+      li.textContent = userId;
+      li.id = `user-${userId}`;
+      activeUsersList.appendChild(li);
+      // Ajouter comme option de destinataire pour les messages directs
+      addMessageTargetOption(userId);
+    }
+
+    // Supprimer un utilisateur de la liste des membres de la salle
+    function removeUserFromList(userId) {
+      const li = document.getElementById(`user-${userId}`);
+      if (li) li.remove();
+      // Supprimer de la liste des destinataires pour les messages directs
+      removeMessageTargetOption(userId);
+    }
+
+    // Mettre à jour les options de destinataire pour les messages
+    function updateMessageTargetOptions() {
+      messageTarget.innerHTML = '<option value="room">Salle</option>';
+      if (currentRoom) {
+        const users = Array.from(activeUsersList.querySelectorAll('li')).map(li => li.textContent);
+        users.forEach(userId => {
+          if (userId !== connectionId) { // Ne pas inclure soi-même
+            const option = document.createElement('option');
+            option.value = userId;
+            option.textContent = `Utilisateur (${userId})`;
+            messageTarget.appendChild(option);
+          }
+        });
+      }
+    }
+
+    // Ajouter une option de destinataire
+    function addMessageTargetOption(userId) {
+      if (userId === connectionId) return; // Ne pas ajouter soi-même
+      const existingOption = document.querySelector(`option[value="${userId}"]`);
+      if (existingOption) return; // Éviter les doublons
+
+      const option = document.createElement('option');
+      option.value = userId;
+      option.textContent = `Utilisateur (${userId})`;
+      messageTarget.appendChild(option);
+    }
+
+    // Supprimer une option de destinataire
+    function removeMessageTargetOption(userId) {
+      const option = document.querySelector(`option[value="${userId}"]`);
+      if (option) option.remove();
+    }
+
+    // Rejoindre une salle
+    joinBtn.addEventListener('click', () => {
+      const roomId = roomInput.value.trim();
+      if (!roomId) {
+        alert("Veuillez entrer un nom de salle.");
+        return;
+      }
+      wsSend({ type: 'join_room', room: roomId });
+    });
+
+    // Quitter une salle
+    leaveBtn.addEventListener('click', () => {
+      if (currentRoom) {
+        wsSend({ type: 'leave_room', room: currentRoom });
+        currentRoom = null;
+      }
+    });
+
+    // Envoyer un message
+    sendBtn.addEventListener('click', () => {
+      const message = messageInput.value.trim();
+      const target = messageTarget.value;
+      if (!message) {
+        alert("Veuillez entrer un message.");
+        return;
+      }
+      if (target === 'room') {
+        wsSend({ type: 'send_room', room: currentRoom, payload: { message } });
+        // Suppression de l'affichage local du message
+      } else {
+        wsSend({ type: 'send_user', to: target, payload: { message } });
+        // Suppression de l'affichage local du message
+      }
+      messageInput.value = '';
+    });
+
+    // Nettoyage lors de la fermeture de la page
+    window.addEventListener('beforeunload', () => {
+      if (currentRoom) {
+        wsSend({ type: 'leave_room', room: currentRoom });
+      }
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.close();
+      }
+    });
+
+    // Lancement initial
+    initWebSocket();
+  </script>
+</body>
+</html>

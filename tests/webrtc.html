@@ -2,29 +2,28 @@
 <html lang="fr">
 <head>
   <meta charset="UTF-8" />
-  <title>Exemple WebRTC minimal (WebSocket unifié)</title>
+  <title>Exemple WebRTC avec Gestion des Salles</title>
   <style>
-    #videoContainer {
-      display: flex;
-      flex-wrap: wrap;
-    }
-    video {
-      width: 300px;
-      height: 225px;
-      margin: 5px;
-      background-color: black;
-    }
-    #controls {
-      margin-bottom: 10px;
-    }
+    body { font-family: Arial, sans-serif; }
+    #videoContainer { display: flex; flex-wrap: wrap; gap: 10px; }
+    video { width: 300px; height: 225px; background: black; }
+    #roomsList { margin-top: 20px; }
+    #roomsList ul { list-style: none; padding: 0; }
+    #roomsList li { margin: 5px 0; }
   </style>
 </head>
 <body>
-  <h1>Exemple WebRTC + send_user / send_room</h1>
-  <div id="controls">
+  <h1>Exemple WebRTC avec Gestion des Salles</h1>
+  
+  <div>
     <label>Room ID: <input id="roomInput" value="maRoomTest"></label>
     <button id="joinBtn">Rejoindre</button>
-    <button id="leaveBtn" disabled>Quitter la salle</button>
+    <button id="leaveBtn" disabled>Quitter</button>
+  </div>
+  
+  <div id="roomsList">
+    <h2>Salles Actives</h2>
+    <ul id="activeRooms"></ul>
   </div>
   
   <div id="videoContainer"></div>
@@ -33,40 +32,36 @@
     const WS_URL = 'ws://localhost:8080/ws';
     let ws;
     let connectionId = null;
+    let currentRoom = null;
     let localStream = null;
     const peerConnections = {};
 
     const joinBtn = document.getElementById('joinBtn');
     const leaveBtn = document.getElementById('leaveBtn');
     const roomInput = document.getElementById('roomInput');
+    const activeRoomsList = document.getElementById('activeRooms');
 
     joinBtn.addEventListener('click', async () => {
       const roomId = roomInput.value.trim();
-      if (!roomId) return;
-      
-      // Récupérer audio/vidéo local
-      try {
-        localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-        addVideoStream(localStream, "localVideo", true);
-      } catch (err) {
-        console.warn("Erreur getUserMedia:", err);
+      if (!roomId) {
+        alert("Veuillez entrer un nom de salle.");
+        return;
       }
-      // Envoyer un message "join_room"
+      // Établir la connexion WebSocket si ce n'est pas déjà fait
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        initWebSocket();
+      }
+      // Rejoindre la salle
       wsSend({ type: 'join_room', room: roomId });
-
-      // Activer le bouton "Quitter"
-      joinBtn.disabled = true;
-      leaveBtn.disabled = false;
     });
 
     leaveBtn.addEventListener('click', () => {
-      const roomId = roomInput.value.trim();
-      if (!roomId) return;
-      wsSend({ type: 'leave_room', room: roomId });
-
-      // Désactiver le bouton "Quitter"
-      leaveBtn.disabled = true;
-      joinBtn.disabled = false;
+      if (currentRoom) {
+        wsSend({ type: 'leave_room', room: currentRoom });
+        currentRoom = null;
+        leaveBtn.disabled = true;
+        joinBtn.disabled = false;
+      }
     });
 
     function addVideoStream(stream, elementId, isLocal) {
@@ -87,9 +82,15 @@
     // ---------------------------
     function initWebSocket() {
       ws = new WebSocket(WS_URL);
-      ws.onopen = () => console.log("[CLIENT] WebSocket ouvert");
-      ws.onerror = (err) => console.error("[CLIENT] WebSocket erreur:", err);
-      ws.onclose = () => console.log("[CLIENT] WebSocket fermé");
+      ws.onopen = () => {
+        console.log("[CLIENT] WebSocket ouvert");
+      };
+      ws.onerror = (err) => {
+        console.error("[CLIENT] WebSocket erreur:", err);
+      };
+      ws.onclose = () => {
+        console.log("[CLIENT] WebSocket fermé");
+      };
       ws.onmessage = (event) => {
         let data;
         try {
@@ -106,7 +107,7 @@
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify(obj));
       } else {
-        console.warn("WebSocket pas prêt, msg ignoré:", obj);
+        console.warn("WebSocket pas prêt, message ignoré:", obj);
       }
     }
 
@@ -119,29 +120,48 @@
 
         case 'joined_room':
           console.log("Rejoint la salle:", data.room);
+          currentRoom = data.room;
+          joinBtn.disabled = true;
+          leaveBtn.disabled = false;
+          // Récupérer audio/vidéo local si ce n'est pas déjà fait
+          if (!localStream) {
+            try {
+              localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+              addVideoStream(localStream, "localVideo", true);
+            } catch (err) {
+              console.warn("Erreur getUserMedia:", err);
+            }
+          }
           break;
 
         case 'left_room':
-          console.log("Quitte la salle:", data.room);
-          // Fermer toutes les peer connections
+          console.log("A quitté la salle:", data.room);
+          // Nettoyer les connexions peer et les vidéos
           for (let userId in peerConnections) {
-            peerConnections[userId].close();
-            delete peerConnections[userId];
-            // Retirer la vidéo correspondante
-            const videoEl = document.getElementById(`remoteVideo-${userId}`);
-            if (videoEl) videoEl.remove();
+            onUserDisconnected(userId);
           }
+          if (localStream) {
+            localStream.getTracks().forEach(track => track.stop());
+            localStream = null;
+            const localVideo = document.getElementById("localVideo");
+            if (localVideo) localVideo.remove();
+          }
+          break;
+
+        case 'active_rooms':
+          updateActiveRooms(data.rooms);
           break;
 
         case 'room_info':
           // ex: user_joined, user_left
           if (data.event === 'user_joined') {
             const newUserId = data.userId;
-            console.log("Nouveau user:", newUserId);
+            if (newUserId === connectionId) return; // Ignorer si c'est soi-même
+            console.log("Nouveau user dans la salle:", newUserId);
             // Créer la PeerConnection et initier l'offer
             createPeerConnection(newUserId, true);
           } else if (data.event === 'user_left') {
-            console.log("User parti:", data.userId);
+            console.log("User parti de la salle:", data.userId);
             onUserDisconnected(data.userId);
           }
           break;
@@ -165,8 +185,21 @@
           }
           break;
 
+        case 'error':
+          console.error("Erreur du serveur:", data.message);
+          break;
+
         default:
-          console.log("Message inconnu:", data);
+          console.log("Message inconnu du serveur:", data);
+      }
+    }
+
+    function updateActiveRooms(rooms) {
+      activeRoomsList.innerHTML = '';
+      for (let room in rooms) {
+        const li = document.createElement('li');
+        li.textContent = `${room} (${rooms[room].length} utilisateurs)`;
+        activeRoomsList.appendChild(li);
       }
     }
 
@@ -196,7 +229,7 @@
 
       pc.ontrack = (event) => {
         const remoteStream = event.streams[0];
-        console.log("Flux distant reçu:", remoteStream);
+        console.log("Flux distant reçu de", userId, ":", remoteStream);
         addVideoStream(remoteStream, `remoteVideo-${userId}`, false);
       };
 
@@ -206,7 +239,7 @@
         });
       }
 
-      // Si on est initiateur, on crée l'offer
+      // Si initiateur, créer et envoyer l'offre
       if (initiator) {
         try {
           const offer = await pc.createOffer();
@@ -229,28 +262,42 @@
 
     async function onOfferReceived(fromUser, offer) {
       const pc = await createPeerConnection(fromUser, false);
-      await pc.setRemoteDescription(new RTCSessionDescription(offer));
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      wsSend({
-        type: 'send_user',
-        to: fromUser,
-        payload: {
-          webrtc_type: 'answer',
-          answer: pc.localDescription
-        }
-      });
+      try {
+        await pc.setRemoteDescription(new RTCSessionDescription(offer));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        wsSend({
+          type: 'send_user',
+          to: fromUser,
+          payload: {
+            webrtc_type: 'answer',
+            answer: pc.localDescription
+          }
+        });
+      } catch (err) {
+        console.error("Erreur lors du traitement de l'offre:", err);
+      }
     }
 
     async function onAnswerReceived(fromUser, answer) {
       const pc = peerConnections[fromUser];
-      if (!pc) return;
-      await pc.setRemoteDescription(new RTCSessionDescription(answer));
+      if (!pc) {
+        console.warn("PeerConnection non trouvée pour l'utilisateur:", fromUser);
+        return;
+      }
+      try {
+        await pc.setRemoteDescription(new RTCSessionDescription(answer));
+      } catch (err) {
+        console.error("Erreur setRemoteDescription (answer):", err);
+      }
     }
 
     async function onIceCandidateReceived(fromUser, candidate) {
       const pc = peerConnections[fromUser];
-      if (!pc) return;
+      if (!pc) {
+        console.warn("PeerConnection non trouvée pour l'utilisateur:", fromUser);
+        return;
+      }
       try {
         await pc.addIceCandidate(new RTCIceCandidate(candidate));
       } catch (err) {
@@ -259,20 +306,30 @@
     }
 
     function onUserDisconnected(userId) {
-      console.log('[CLIENT] userDisconnected =>', userId);
       const pc = peerConnections[userId];
       if (pc) {
         pc.close();
         delete peerConnections[userId];
       }
-      // Retirer la vidéo correspondante
       const videoEl = document.getElementById(`remoteVideo-${userId}`);
-      if (videoEl) {
-        videoEl.remove();
-      }
+      if (videoEl) videoEl.remove();
+      console.log("Nettoyé les ressources pour l'utilisateur:", userId);
     }
 
-    // Lancement
+    // Nettoyage lors de la fermeture de la page
+    window.addEventListener('beforeunload', () => {
+      if (currentRoom) {
+        wsSend({ type: 'leave_room', room: currentRoom });
+      }
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.close();
+      }
+      for (let userId in peerConnections) {
+        onUserDisconnected(userId);
+      }
+    });
+
+    // Lancement initial
     initWebSocket();
   </script>
 </body>
