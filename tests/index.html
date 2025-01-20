@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <title>Client WebSocket avec Gestion de Salles</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        #messages { border: 1px solid #ccc; padding: 10px; height: 200px; overflow-y: scroll; }
+        #roomsList { margin-top: 10px; }
+        #currentRoom { margin-top: 10px; }
+    </style>
+</head>
+<body>
+    <h1>Client WebSocket avec Gestion de Salles</h1>
+
+    <div>
+        <p>Your Connection ID: <span id="yourId">Connecting...</span></p>
+    </div>
+
+    <div>
+        <h2>Créer une Salle</h2>
+        <input type="text" id="createRoomInput" placeholder="Nom de la salle">
+        <button id="createRoomButton">Créer</button>
+    </div>
+
+    <div>
+        <h2>Rejoindre une Salle</h2>
+        <select id="roomsSelect">
+            <option value="">-- Sélectionner une salle --</option>
+        </select>
+        <button id="joinRoomButton">Rejoindre</button>
+    </div>
+
+    <div id="currentRoom" style="display: none;">
+        <h2>Salle Actuelle: <span id="currentRoomName"></span></h2>
+        <button id="leaveRoomButton">Quitter la Salle</button>
+    </div>
+
+    <div id="chat" style="display: none;">
+        <h3>Chat dans la Salle</h3>
+        <div id="messages"></div>
+        <input type="text" id="messageInput" placeholder="Votre message">
+        <button id="sendMessageButton">Envoyer</button>
+    </div>
+
+    <script>
+        const yourIdSpan = document.getElementById('yourId');
+        const createRoomInput = document.getElementById('createRoomInput');
+        const createRoomButton = document.getElementById('createRoomButton');
+        const roomsSelect = document.getElementById('roomsSelect');
+        const joinRoomButton = document.getElementById('joinRoomButton');
+        const currentRoomDiv = document.getElementById('currentRoom');
+        const currentRoomNameSpan = document.getElementById('currentRoomName');
+        const leaveRoomButton = document.getElementById('leaveRoomButton');
+        const chatDiv = document.getElementById('chat');
+        const messagesDiv = document.getElementById('messages');
+        const messageInput = document.getElementById('messageInput');
+        const sendMessageButton = document.getElementById('sendMessageButton');
+
+        let yourId;
+        let currentRoom = null;
+
+        const signalingServerUrl = 'ws://localhost:8080/ws'; // Changez l'URL si nécessaire
+        const ws = new WebSocket(signalingServerUrl);
+
+        ws.onopen = () => {
+            console.log('Connecté au serveur WebSocket');
+        };
+
+        ws.onmessage = (message) => {
+            const data = JSON.parse(message.data);
+            console.log('Message reçu du serveur:', data);
+
+            switch (data.type) {
+                case 'connection_id':
+                    yourId = data.connection_id;
+                    yourIdSpan.textContent = yourId;
+                    console.log(`Votre ID de connexion: ${yourId}`);
+                    break;
+
+                case 'active_rooms':
+                    updateRoomsList(data.rooms);
+                    break;
+
+                case 'room_created':
+                    alert(`Salle créée: ${data.room}`);
+                    break;
+
+                case 'joined_room':
+                    currentRoom = data.room;
+                    currentRoomNameSpan.textContent = currentRoom;
+                    currentRoomDiv.style.display = 'block';
+                    chatDiv.style.display = 'block';
+                    messagesDiv.innerHTML = '';
+                    console.log(`Vous avez rejoint la salle: ${currentRoom}`);
+                    break;
+
+                case 'left_room':
+                    currentRoom = null;
+                    currentRoomDiv.style.display = 'none';
+                    chatDiv.style.display = 'none';
+                    console.log(`Vous avez quitté la salle: ${data.room}`);
+                    break;
+
+                case 'room_message':
+                    console.log(`Message reçu dans la salle ${data.room} de ${data.source}: ${data.message}`);
+                    displayMessage(data.source, data.message);
+                    break;
+
+                case 'error':
+                    alert(`Erreur: ${data.message}`);
+                    console.error(`Erreur du serveur: ${data.message}`);
+                    break;
+
+                default:
+                    console.log('Type de message non géré:', data.type);
+            }
+        };
+
+        ws.onerror = (error) => {
+            console.error('Erreur WebSocket:', error);
+        };
+
+        ws.onclose = (event) => {
+            console.log(`WebSocket fermé: Code=${event.code}, Raison=${event.reason}`);
+        };
+
+        // Créer une salle
+        createRoomButton.addEventListener('click', () => {
+            const roomName = createRoomInput.value.trim();
+            if (roomName) {
+                const message = { type: "create_room", room: roomName };
+                ws.send(JSON.stringify(message));
+                console.log('Message envoyé au serveur:', message); // Log du message envoyé
+                createRoomInput.value = '';
+            } else {
+                alert('Veuillez entrer un nom de salle.');
+            }
+        });
+
+        // Rejoindre une salle
+        joinRoomButton.addEventListener('click', () => {
+            const selectedRoom = roomsSelect.value;
+            if (selectedRoom) {
+                const message = { type: "join_room", room: selectedRoom };
+                ws.send(JSON.stringify(message));
+                console.log('Message envoyé au serveur:', message); // Log du message envoyé
+            } else {
+                alert('Veuillez sélectionner une salle.');
+            }
+        });
+
+        // Quitter la salle
+        leaveRoomButton.addEventListener('click', () => {
+            if (currentRoom) {
+                const message = { type: "leave_room", room: currentRoom };
+                ws.send(JSON.stringify(message));
+                console.log('Message envoyé au serveur:', message); // Log du message envoyé
+                currentRoom = null;
+                currentRoomDiv.style.display = 'none';
+                chatDiv.style.display = 'none';
+            }
+        });
+
+        // Envoyer un message dans la salle
+        sendMessageButton.addEventListener('click', () => {
+            const messageText = messageInput.value.trim();
+            if (messageText && currentRoom) {
+                const message = { type: "send_room", room: currentRoom, message: messageText };
+                ws.send(JSON.stringify(message));
+                console.log('Message envoyé au serveur:', message); // Log du message envoyé
+                // Suppression de l'affichage local du message
+                // displayMessage('Vous', messageText);
+                messageInput.value = '';
+            }
+        });
+
+        // Mettre à jour la liste des salles
+        function updateRoomsList(rooms) {
+            roomsSelect.innerHTML = '<option value="">-- Sélectionner une salle --</option>';
+            for (const [room, members] of Object.entries(rooms)) {
+                // Vous pouvez ajouter des informations supplémentaires, comme le nombre de membres
+                const option = document.createElement('option');
+                option.value = room;
+                option.textContent = `${room} (${members.length})`;
+                roomsSelect.appendChild(option);
+            }
+        }
+
+        // Afficher un message dans le chat
+        function displayMessage(source, message) {
+            const messageElement = document.createElement('p');
+            messageElement.innerHTML = `<strong>${source}:</strong> ${message}`;
+            messagesDiv.appendChild(messageElement);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+    </script>
+</body>
+</html>
